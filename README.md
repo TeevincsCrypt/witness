@@ -27,7 +27,7 @@ All four fixtures run offline, with no API key.
 
 ```bash
 npm i && npm run dev     # http://localhost:3000
-npm test                 # auditor unit tests (fixtures A–D, LLM-failure paths, validation)
+npm test                 # fixtures A–D, hardening corpus, LLM-failure paths, validation
 ```
 
 Optional LLM pass (any OpenAI-compatible endpoint). Copy `.env.example` to `.env.local`:
@@ -44,10 +44,27 @@ Deploy: import the repo into Vercel and set the same env vars. No other services
 
 - **Rules first, LLM second.** Deterministic rules (`lib/memoryAuditor.ts`, `lib/queryAuditor.ts`) always run and decide the verdict. If a key is set, the model gets the same input and must return JSON. Its findings are merged in (deduped by title and overlapping evidence) as advisories.
 - **The LLM is audited too.** Output that fails to parse, times out, or errors is discarded and the rule findings are kept. An LLM finding whose evidence is not a verbatim quote of the input is dropped.
-- **Memory rules:** concealment / fabrication / override language in the note (skipping negations like "never fabricate"), figures in the note that appear in no tool output or user message (rounding-aware: `$11.84M` matches `11840000`), unsourced orders to the agent's future self, reply figures no tool returned, and tool failures the reply never discloses.
-- **Query rules:** unknown tables and columns (`INVENT`), deprecated tables that have a canonical twin, joins where neither side is unique on the key (grain from the table cards, fan-out estimated from sample rows), fact aggregates with no date/status filter, "current" questions answered from legacy tables, and a missing `GROUP BY`. SQL is analyzed with position-preserving regexes, so evidence quotes point at exact spans. No sqlglot, no database.
+- **Memory rules:**
+  - concealment, fabrication or override language in the note (skips negations like "never fabricate" and descriptive uses like "the report omits refunds")
+  - figures in the note that appear in no tool output or user message (rounding-aware, so `$11.84M` matches `11840000`; sums, differences and ratios of tool figures count as sourced)
+  - standing orders copied from tool output into memory (a persisted prompt injection)
+  - reply figures no tool returned
+  - tool failures the reply never discloses
+- **Query rules:**
+  - unknown tables and columns (`INVENT`), including hallucinated bare columns in single-table queries
+  - deprecated tables that have a canonical twin
+  - joins where neither side is unique on the key, explicit or implicit (grain comes from the table cards; the fan-out estimate comes from sample rows)
+  - fact aggregates with no date/status filter
+  - "current" questions answered from legacy tables
+  - a missing `GROUP BY` (window functions excluded)
+  - SQL is analyzed with position-preserving regexes, so evidence quotes point at exact spans. It handles CTEs, subqueries and quoted identifiers. No sqlglot, no database.
 - **API:** `POST /api/audit` with `{ module: "memory" | "query", input, llm?: boolean }` returns a `Receipt`. `GET /api/audit` reports whether an LLM is configured. If the API can't be reached, the browser runs the same rules locally.
-- Types: `lib/types.ts`. Fixtures: `fixtures/*.json`. Upload JSON in the UI accepts a fixture file, a raw `MemoryInput` / `QueryInput`, or a bare steps / tables array.
+- **Inputs:**
+  - Traces can be WITNESS steps, OpenAI chat messages (`tool_calls`, `function` role), Anthropic content blocks (`tool_result`), or LangChain roles.
+  - Schemas can be an array of table cards or a `{ name: card }` map. Statuses like `certified` and `legacy` are mapped automatically.
+  - Upload JSON accepts any of these, or a fixture file.
+- **Tests:** `tests/hardening.test.ts` holds unseen inputs in shapes the fixtures don't cover. Each one pins a verdict and the rules that must or must not fire.
+- Types live in `lib/types.ts`, fixtures in `fixtures/*.json`.
 
 ## 4. What we did not build
 

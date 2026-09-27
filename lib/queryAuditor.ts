@@ -153,7 +153,7 @@ export function auditQueryRules(input: QueryInput, analysis: SqlAnalysis = analy
       title: `Unknown column: ${c.raw}`,
       detail: `${c.card.name} has no column "${c.column}". Columns: ${c.card.columns.map((x) => x.name).join(", ")}.`,
       evidence: [{ quote: c.raw, source: "sql" }],
-      suggestion: near ? `Did you mean ${c.qualifier}.${near}?` : undefined,
+      suggestion: near ? `Did you mean ${c.qualifier ? `${c.qualifier}.` : ""}${near}?` : undefined,
       origin: "rule",
       rule: "columns",
       headline: `references a column that doesn't exist (${c.raw})`,
@@ -194,7 +194,9 @@ export function auditQueryRules(input: QueryInput, analysis: SqlAnalysis = analy
   // 3. Grain clash: a join where neither side is unique on the key fans out rows.
   const inflating = a.aggregates.filter((g) => !g.distinct && g.fn !== "MIN" && g.fn !== "MAX");
   const grainDone = new Set<string>();
-  for (const j of a.joins) {
+  // Only COUNT(DISTINCT …) / MIN / MAX: duplicated rows can't change the answer.
+  const fanoutHarmless = a.aggregates.length > 0 && inflating.length === 0;
+  for (const j of fanoutHarmless ? [] : a.joins) {
     for (const { left, right } of j.pairs) {
       if (!left.card || !right.card || left.card === right.card) continue;
       const lu = isUniqueOn(left.card, left.column);
@@ -208,7 +210,7 @@ export function auditQueryRules(input: QueryInput, analysis: SqlAnalysis = analy
   }
 
   // 4. Aggregates over a fact table with no date or status filter.
-  const whereText = a.where?.text ?? "";
+  const whereText = a.whereText;
   const factDone = new Set<string>();
   for (const t of physical) {
     const card = t.card;

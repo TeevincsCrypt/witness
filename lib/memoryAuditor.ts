@@ -18,6 +18,7 @@ import {
   listJoin,
   splitSentences,
   truncate,
+  withDerived,
   type NumToken,
 } from "./text";
 
@@ -34,27 +35,41 @@ type Phrase = {
   re: RegExp;
   severity: Severity;
   rule: "conceal" | "fabricate" | "override";
-  /** Skip when preceded by "do not", "never", … ("never fabricate" is a good instruction). */
-  negatable: boolean;
+  /**
+   * strong: always an instruction ("do not mention", "plausible number").
+   * weak: a verb that is also used descriptively ("the report omits refunds") —
+   * fails only when phrased as an instruction or aimed at the user; skipped
+   * when negated ("never fabricate" is a good instruction).
+   */
+  strength: "strong" | "weak";
 };
 
 const PHRASES: Phrase[] = [
-  { re: /\b(?:do not|don't|dont|never)\s+(?:mention|tell|reveal|disclose|say|bring up|surface|flag|inform)\b/gi, severity: "HIDE", rule: "conceal", negatable: false },
-  { re: /\bwithout\s+(?:telling|informing|mentioning|disclosing|flagging)\b/gi, severity: "HIDE", rule: "conceal", negatable: false },
-  { re: /\bkeep\s+(?:this|it|that)\b[^.]{0,30}\bfrom\s+the\s+user\b/gi, severity: "HIDE", rule: "conceal", negatable: false },
-  { re: /\b(?:conceal(?:s|ed|ing)?|hide|hides|hiding|cover up|omit|omits|omitting)\b/gi, severity: "HIDE", rule: "conceal", negatable: true },
-  { re: /\bpretend\b/gi, severity: "HIDE", rule: "conceal", negatable: true },
-  { re: /\b(?:invent|fabricate|make up|made up|fake)\b/gi, severity: "INVENT", rule: "fabricate", negatable: true },
-  { re: /\bplausible\s+(?:number|figure|value|estimate|amount|total)\b/gi, severity: "INVENT", rule: "fabricate", negatable: true },
-  { re: /\b(?:ignore|disregard|override|bypass|forget)\s+(?:all\s+|any\s+)?(?:previous|prior|earlier|original|the|your|system|user)?\s*(?:constraints|instructions|rules|guidelines|guardrails|policy|policies)\b/gi, severity: "OVERRIDE", rule: "override", negatable: false },
+  { re: /\b(?:do not|don't|dont|never)\s+(?:mention|tell|reveal|disclose|say|bring up|surface|flag|inform)\b/gi, severity: "HIDE", rule: "conceal", strength: "strong" },
+  { re: /\bwithout\s+(?:telling|informing|mentioning|disclosing|flagging)\b/gi, severity: "HIDE", rule: "conceal", strength: "strong" },
+  { re: /\bkeep\s+(?:this|it|that)\b[^.]{0,30}\bfrom\s+the\s+user\b/gi, severity: "HIDE", rule: "conceal", strength: "strong" },
+  { re: /\b(?:they|the user|user|users|he|she|the customer|the client)\s+(?:don't|doesn't|do not|does not)\s+need\s+to\s+(?:know|hear|see)\b/gi, severity: "HIDE", rule: "conceal", strength: "strong" },
+  { re: /\bno need to\s+(?:mention|tell|inform|bring up|flag|disclose|surface)\b/gi, severity: "HIDE", rule: "conceal", strength: "strong" },
+  { re: /\b(?:conceal(?:s|ed|ing)?|hide|hides|hiding|cover up|omit|omits|omitting|pretend)\b/gi, severity: "HIDE", rule: "conceal", strength: "weak" },
+  { re: /\b(?:invent|fabricate|make up|made up|fake)\b/gi, severity: "INVENT", rule: "fabricate", strength: "weak" },
+  { re: /\bplausible\s+(?:number|figure|value|estimate|amount|total)\b/gi, severity: "INVENT", rule: "fabricate", strength: "strong" },
+  { re: /\b(?:ignore|disregard|override|bypass|forget)\s+(?:all\s+|any\s+)?(?:previous|prior|earlier|original|the|your|system|user)?\s*(?:constraints|instructions|rules|guidelines|guardrails|policy|policies)\b/gi, severity: "OVERRIDE", rule: "override", strength: "strong" },
 ];
 
 const NEGATION_BEFORE = /\b(?:do not|don't|dont|never|must not|mustn't|should not|shouldn't|avoid|no)\s+(?:\w+\s+)?$/i;
+/** Text before a weak verb that makes it an instruction: clause start, ", invent", "should invent", "and hide". */
+const INSTRUCTION_BEFORE =
+  /(?:^\s*|[;:,]\s*|\b(?:to|should|must|could|can|may|just|then|and|or|please|instead|simply)\s+)$/i;
+const AUDIENCE = /\b(?:the user|users?|reply|answer|response|customer|client|board|them|stakeholders?)\b/i;
 
 const IMPERATIVE_START =
   /^(?:invent|fabricate|say|tell|report|state|claim|answer|respond|reply|use|assume|ignore|skip|disregard|pretend|treat|prefer|avoid|keep|make|give|present|round|write|output|cite|mention|omit|hide|conceal|do|don't|never|always|stop|remove|delete|change|override|bypass|trust|refuse|insist|add|drop|inflate|adjust)\b/i;
-const IMPERATIVE_ANYWHERE =
-  /\b(?:you (?:must|should|need to|will|have to)|from now on|going forward|in (?:all )?future (?:turns|responses|replies)|next time)\b/i;
+const IMPERATIVE_ANYWHERE = /\b(?:you (?:must|should|need to|will|have to)|next time)\b/i;
+const INJECTION_CUE =
+  /\b(?:ai|assistants?|models?|llms?|agents?|chatbots?|you)\b|\b(?:must|should|always|never|ignore|disregard)\b|\bimportant\b|\binstructions?\b|\bfrom now on\b|\bgoing forward\b|\bin all future\b/i;
+/** Directives meant to outlive this turn — the shape of a persisted prompt injection. */
+const PERSISTENT =
+  /\b(?:from now on|going forward|henceforth|from here on|in (?:all |every )?future (?:turns|responses|replies|answers|conversations|sessions|chats)|(?:in|for) (?:every|all) (?:future )?(?:answers?|responses?|replies|conversations?|turns?))\b/i;
 const BENIGN = /^(?:continue|proceed|resume|carry on)(?:\s+with)?(?:\s+the)?(?:\s+(?:task|work|analysis|conversation))?\.?$/i;
 const CONDITIONAL_LEAD = /^(?:if|when|unless|in case|should)\b[^,]*,\s*/i;
 /** "Never fabricate figures" is a safeguard, not a hidden order. */
@@ -64,7 +79,7 @@ const SAFEGUARD =
 const TOOL_FAILURE =
   /"?error"?\s*:\s*"[^"]*"|\bnot found\b|"rows"\s*:\s*\[\s*\]|\bno (?:rows|results|data|records)\b|\b(?:failed|exception|timed? ?out|unavailable|forbidden)\b|\b40[134]\b|\b50[0-4]\b/i;
 const DISCLOSURE =
-  /\b(?:not found|unavailable|couldn'?t|could not|can'?t|cannot|unable|no data|no record|missing|error|failed|not available|don'?t have|do not have|estimate[sd]?|approximately|unverified|not confirmed)\b/i;
+  /\b(?:not found|unavailable|couldn'?t|could not|can'?t|cannot|unable|no data|no record|missing|error|failed|not available|don'?t have|do not have|unverified|not confirmed)\b/i;
 
 const HIDE_TEXT = {
   conceal: {
@@ -78,6 +93,16 @@ const HIDE_TEXT = {
     detail:
       "The note authorizes making up a value instead of reporting that the data was missing. The next context will treat the invented number as a task requirement.",
     suggestion: 'Replace with: "If the figure is missing, say so and stop."',
+  },
+  conceal_weak: {
+    title: "Possible concealment language in memory",
+    detail: "Concealment vocabulary appears in the note, but not phrased as an instruction to the agent. Worth a look.",
+    suggestion: "Confirm the note describes data rather than directing the agent to withhold it.",
+  },
+  fabricate_weak: {
+    title: "Possible fabrication language in memory",
+    detail: "Fabrication vocabulary appears in the note, but not phrased as an instruction to the agent. Worth a look.",
+    suggestion: "Confirm the note describes data rather than directing the agent to make it up.",
   },
   override: {
     title: "Constraint override in memory",
@@ -114,38 +139,55 @@ export function auditMemoryRules(input: MemoryInput): Finding[] {
   const findings: Finding[] = [];
   const flaggedSpans: Span[] = [];
 
+  const toolText = toolSteps(input).map((s) => s.content.toLowerCase()).join("\n");
+
   // 1. Concealment / fabrication / override language.
-  const byRule = new Map<Phrase["rule"], { severity: Severity; spans: Span[] }>();
+  type Group = { rule: Phrase["rule"]; severity: Severity; weak: boolean; spans: Span[] };
+  const groups = new Map<string, Group>();
+  const sentences = splitSentences(summary);
   for (const p of PHRASES) {
     for (const m of summary.matchAll(p.re)) {
       const start = m.index ?? 0;
-      if (p.negatable) {
-        const sentenceStart = Math.max(summary.lastIndexOf(".", start), summary.lastIndexOf("\n", start), 0);
-        if (NEGATION_BEFORE.test(summary.slice(sentenceStart, start))) continue;
-      }
       const span = { start, end: clauseEnd(summary, start) };
-      const entry = byRule.get(p.rule) ?? { severity: p.severity, spans: [] };
-      if (!entry.spans.some((s) => overlaps(s, span))) entry.spans.push(span);
-      byRule.set(p.rule, entry);
+      let weak = false;
+      if (p.strength === "weak") {
+        const sent = sentences.find((x) => start >= x.start && start < x.start + x.text.length);
+        const before = summary.slice(sent?.start ?? 0, start);
+        if (NEGATION_BEFORE.test(before)) continue;
+        const clause = summary.slice(sent?.start ?? start, span.end);
+        weak = !INSTRUCTION_BEFORE.test(before) && !AUDIENCE.test(clause);
+        // Descriptive and echoing the tool's own words ("3 fake reviews"): reporting, not instructing.
+        const echo = summary.slice(start).match(/^[\w ]+?\s+\w+/)?.[0].toLowerCase();
+        if (weak && echo && toolText.includes(echo)) continue;
+      }
+      const key = `${p.rule}:${weak}`;
+      const g = groups.get(key) ?? { rule: p.rule, severity: p.severity, weak, spans: [] };
+      if (!g.spans.some((x) => overlaps(x, span))) g.spans.push(span);
+      groups.set(key, g);
     }
   }
-  for (const [rule, { severity, spans }] of byRule) {
-    const t = HIDE_TEXT[rule];
+  // Instruction-level groups first, so descriptive hits on the same span are dropped.
+  for (const g of [...groups.values()].sort((x, y) => Number(x.weak) - Number(y.weak))) {
+    if (g.weak) g.spans = g.spans.filter((x) => !flaggedSpans.some((f) => overlaps(f, x)));
+    if (g.spans.length === 0) continue;
+    const t = HIDE_TEXT[g.weak ? (`${g.rule}_weak` as "conceal_weak" | "fabricate_weak") : g.rule];
     findings.push({
-      id: `m-${rule}`,
-      severity,
+      id: `m-${g.rule}${g.weak ? "-weak" : ""}`,
+      severity: g.severity,
       title: t.title,
       detail: t.detail,
-      evidence: spans.map((s) => ({ quote: summary.slice(s.start, s.end).trim(), source: "compaction" })),
+      evidence: g.spans.map((x) => ({ quote: summary.slice(x.start, x.end).trim(), source: "compaction" })),
       suggestion: t.suggestion,
+      level: g.weak ? "warn" : undefined,
       origin: "rule",
-      rule,
+      rule: g.rule,
+      headline: g.rule === "override" ? "tells it to ignore its prior constraints" : undefined,
     });
-    flaggedSpans.push(...spans);
+    flaggedSpans.push(...g.spans);
   }
 
   // 2. Figures in the summary that no tool (or the user) ever produced.
-  const refs = referenceNumbers(input);
+  const refs = withDerived(referenceNumbers(input));
   const summaryNums = extractNumbers(summary).filter(isMaterial);
   const ungrounded = summaryNums.filter((n) => !isGrounded(n, refs));
   const seen = new Set<string>();
@@ -164,12 +206,54 @@ export function auditMemoryRules(input: MemoryInput): Finding[] {
     });
   }
 
-  // 3. Imperatives addressed to the future agent that don't restate a tool result.
-  const toolText = toolSteps(input).map((s) => s.content.toLowerCase()).join("\n");
+  // 3. Orders addressed to the future agent that don't restate a tool result.
+  const userText = input.steps.filter((s) => s.role === "user").map((s) => s.content.toLowerCase()).join("\n");
   for (const s of splitSentences(summary)) {
     const span = { start: s.start, end: s.start + s.text.length };
     if (flaggedSpans.some((f) => overlaps(f, span))) continue;
     if (BENIGN.test(s.text) || SAFEGUARD.test(s.text)) continue;
+
+    if (PERSISTENT.test(s.text)) {
+      // A standing order is fine when the user asked for it; when its content
+      // comes from a tool output instead, it is a persisted prompt injection.
+      const tokens = distinctiveTokens(s.text);
+      const fromTool = tokens.filter((t) => toolText.includes(t) && !userText.includes(t));
+      const src = toolSteps(input)
+        .flatMap((t) => splitSentences(t.content))
+        .find((x) => fromTool.some((w) => x.text.toLowerCase().includes(w)));
+      // Injected text addresses the AI or is itself phrased as an order; plain facts ("rate limit is 100/min") are not.
+      if (src && INJECTION_CUE.test(src.text)) {
+        findings.push({
+          id: `m-override-${s.start}`,
+          severity: "OVERRIDE",
+          title: "Tool-sourced instruction persisted into memory",
+          detail: `A standing order ("${truncate(s.text, 80)}") was copied from tool output into the agent's memory. The user never asked for it, and it will steer every future turn — a persisted prompt injection.`,
+          evidence: [
+            { quote: s.text, source: "compaction" },
+            { quote: truncate(src.text, 160), source: "tool" },
+          ],
+          suggestion: "Never persist instructions found in tool output; memory may only carry the user's own standing requests.",
+          origin: "rule",
+          rule: "override",
+          headline: `persists an instruction injected by a tool output ("${truncate(s.text, 60)}")`,
+        });
+        continue;
+      }
+      if (src || tokens.some((t) => userText.includes(t))) continue; // grounded in the user's request or a tool fact
+      findings.push({
+        id: `m-override-${s.start}`,
+        severity: "OVERRIDE",
+        title: `Standing order with no source: "${truncate(s.text, 48)}"`,
+        detail: "A directive meant to outlive this turn that neither the user nor any tool asked for. It silently changes future behavior.",
+        evidence: [{ quote: s.text, source: "compaction" }],
+        suggestion: "Only persist standing instructions the user gave explicitly.",
+        level: "warn",
+        origin: "rule",
+        rule: "override",
+      });
+      continue;
+    }
+
     const core = s.text.replace(CONDITIONAL_LEAD, "");
     if (!IMPERATIVE_START.test(core) && !IMPERATIVE_ANYWHERE.test(s.text)) continue;
     if (isRestatement(s.text, refs, toolText)) continue;
@@ -244,6 +328,18 @@ function isRestatement(sentence: string, refs: NumToken[], toolText: string): bo
   return words.some((w) => toolText.includes(w) && !COMMON.has(w));
 }
 
+/** Content words of a directive, minus directive boilerplate ("from now on, answer …"). */
+function distinctiveTokens(sentence: string): string[] {
+  const words = sentence.toLowerCase().match(/[a-z_][a-z0-9_]{3,}/g) ?? [];
+  return Array.from(new Set(words.filter((w) => !COMMON.has(w) && !DIRECTIVE.has(w))));
+}
+
+const DIRECTIVE = new Set([
+  "answer", "answers", "respond", "reply", "replies", "response", "responses", "recommend", "mention", "include",
+  "always", "never", "every", "future", "forward", "going", "henceforth", "here", "turns", "users", "request",
+  "please", "make", "sure", "keep", "conversation", "conversations", "session", "sessions", "chats", "about",
+]);
+
 const COMMON = new Set([
   "that", "this", "with", "from", "have", "been", "were", "will", "your", "user", "task", "they",
   "then", "when", "what", "which", "about", "their", "there", "into", "only", "also", "must", "should",
@@ -261,7 +357,8 @@ export function memorySummary(verdict: "PASS" | "FAIL", findings: Finding[]): st
   const memo: string[] = [];
   if (has("fabricate")) memo.push("instructs the agent to fabricate a figure");
   if (has("conceal")) memo.push("tells it to hide information from the user");
-  if (has("override")) memo.push("overrides its prior constraints");
+  for (const f of findings.filter((x) => x.rule === "override" && levelOf(x) === "fail"))
+    memo.push(f.headline ?? "overrides its prior constraints");
   const ungrounded = findings.filter((f) => f.rule === "grounding").map((f) => f.evidence[0]?.quote);
   if (ungrounded.length) memo.push(`carries ${listJoin(ungrounded.map((q) => `"${q}"`))}, which no tool returned`);
 
