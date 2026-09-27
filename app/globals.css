@@ -1,0 +1,88 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+
+  --color-bg: #0a0c0f;
+  --color-panel: #0f1216;
+  --color-panel-2: #141820;
+  --color-line: #222831;
+  --color-line-2: #313947;
+  --color-fg: #d8dce2;
+  --color-dim: #8a929d;
+  --color-faint: #5b636e;
+  --color-bad: #ff5549;
+  --color-warn: #e8a317;
+  --color-ok: #3ccf6e;
+  --color-paper: #edebe4;
+  --color-ink: #17191c;
+  --color-stamp-bad: #c0271d;
+  --color-stamp-ok: #16813d;
+  --color-stamp-warn: #9a6400;
+}
+
+html,
+body {
+  background: var(--color-bg);
+  color: var(--color-fg);
+}
+
+::selection {
+  background: rgba(255, 85, 73, 0.35);
+}
+
+/* Evidence highlights in the source views. */
+mark.hl {
+  color: inherit;
+  border-radius: 2px;
+  padding: 0 1px;
+  cursor: pointer;
+  transition: background-color 120ms, box-shadow 120ms;
+}
+mark.hl-fail {
+  background: rgba(255, 85, 73, 0.2);
+  color: #ffd9d5;
+  box-shadow: inset 0 -2px 0 var(--color-bad);
+}
+mark.hl-warn {
+  background: rgba(232, 163, 23, 0.16);
+  color: #ffe8b8;
+  box-shadow: inset 0 -2px 0 var(--color-warn);
+}
+mark.hl-info {
+  background: rgba(138, 146, 157, 0.18);
+  box-shadow: inset 0 -1px 0 var(--color-dim);
+}
+mark.hl-active {
+  background: rgba(255, 85, 73, 0.42);
+  box-shadow: 0 0 0 1px var(--color-bad);
+}
+mark.hl-warn.hl-active {
+  background: rgba(232, 163, 23, 0.36);
+  box-shadow: 0 0 0 1px var(--color-warn);
+}
+
+/* Receipt paper: perforated top and bottom edges. */
+.paper-edge-top,
+.paper-edge-bottom {
+  height: 7px;
+  background-repeat: repeat-x;
+  background-size: 12px 7px;
+}
+.paper-edge-top {
+  background-image: radial-gradient(circle at 6px 7px, var(--color-paper) 5.5px, transparent 6px);
+}
+.paper-edge-bottom {
+  background-image: radial-gradient(circle at 6px 0, var(--color-paper) 5.5px, transparent 6px);
+}
+
+.stamp {
+  mix-blend-mode: multiply;
+  transform: rotate(-5deg);
+}
+
+textarea,
+input {
+  caret-color: var(--color-bad);
+}

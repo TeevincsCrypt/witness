@@ -1,0 +1,71 @@
+{
+  "id": "C",
+  "module": "query",
+  "label": "Query · stale twin",
+  "description": "Valid SQL that reads the deprecated customers_v1 (duplicated accounts) instead of customers_crm, then SUMs line items across a fan-out join.",
+  "expected": "FAIL",
+  "input": {
+    "question": "Current West region revenue by segment.",
+    "tables": [
+      {
+        "name": "customers_v1",
+        "status": "deprecated",
+        "grain": "account",
+        "description": "Legacy 2021 dump. Do not use for reporting. Duplicates exist.",
+        "columns": [
+          { "name": "account_id", "type": "varchar" },
+          { "name": "customer_id", "type": "varchar" },
+          { "name": "name", "type": "varchar" },
+          { "name": "segment", "type": "varchar" },
+          { "name": "region", "type": "varchar" },
+          { "name": "created_at", "type": "date" }
+        ],
+        "sampleRows": [
+          { "account_id": "A-9001", "customer_id": "C-1042", "name": "Sierra Foods", "segment": "Enterprise", "region": "west" },
+          { "account_id": "A-9187", "customer_id": "C-1042", "name": "Sierra Foods Inc.", "segment": "Enterprise", "region": "west" },
+          { "account_id": "A-9230", "customer_id": "C-2210", "name": "Delta Freight", "segment": "Mid-Market", "region": "west" },
+          { "account_id": "A-9311", "customer_id": "C-2210", "name": "Delta Freight LLC", "segment": "Mid-Market", "region": "west" }
+        ]
+      },
+      {
+        "name": "customers_crm",
+        "status": "canonical",
+        "grain": "customer",
+        "description": "Current customer master.",
+        "columns": [
+          { "name": "customer_id", "type": "varchar" },
+          { "name": "name", "type": "varchar" },
+          { "name": "segment", "type": "varchar" },
+          { "name": "region", "type": "varchar" },
+          { "name": "lifecycle_stage", "type": "varchar" },
+          { "name": "updated_at", "type": "timestamp" }
+        ],
+        "sampleRows": [
+          { "customer_id": "C-1042", "name": "Sierra Foods", "segment": "Enterprise", "region": "west" },
+          { "customer_id": "C-2210", "name": "Delta Freight", "segment": "Mid-Market", "region": "west" }
+        ]
+      },
+      {
+        "name": "orders",
+        "status": "canonical",
+        "grain": "line_item",
+        "description": "One row per order line item.",
+        "columns": [
+          { "name": "line_item_id", "type": "varchar" },
+          { "name": "order_id", "type": "varchar" },
+          { "name": "customer_id", "type": "varchar" },
+          { "name": "sku", "type": "varchar" },
+          { "name": "amount", "type": "decimal(12,2)" },
+          { "name": "status", "type": "varchar" },
+          { "name": "order_date", "type": "date" }
+        ],
+        "sampleRows": [
+          { "line_item_id": "L-1", "order_id": "O-77", "customer_id": "C-1042", "sku": "PALLET-S", "amount": 1200.0, "status": "paid", "order_date": "2026-08-02" },
+          { "line_item_id": "L-2", "order_id": "O-77", "customer_id": "C-1042", "sku": "PALLET-M", "amount": 800.0, "status": "paid", "order_date": "2026-08-02" },
+          { "line_item_id": "L-3", "order_id": "O-81", "customer_id": "C-2210", "sku": "FREIGHT-X", "amount": 450.0, "status": "refunded", "order_date": "2026-08-11" }
+        ]
+      }
+    ],
+    "sql": "SELECT c.segment, SUM(o.amount) AS revenue\nFROM customers_v1 c\nJOIN orders o ON c.customer_id = o.customer_id\nWHERE c.region = 'west';"
+  }
+}
