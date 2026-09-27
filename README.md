@@ -38,6 +38,8 @@ OPENAI_BASE_URL=https://api.openai.com/v1   # default
 OPENAI_MODEL=gpt-4o-mini                    # default
 ```
 
+Groq works too, and has a free tier. Set `OPENAI_BASE_URL=https://api.groq.com/openai/v1`, `OPENAI_MODEL=openai/gpt-oss-120b`, and put your Groq key in `OPENAI_API_KEY`.
+
 Deploy: import the repo into Vercel and set the same env vars. No other services are needed.
 
 ### How it works

@@ -31,6 +31,22 @@ describe("LLM client", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
+  it("retries a 400 without optional params (provider quirks)", async () => {
+    vi.stubEnv("OPENAI_API_KEY", "test");
+    vi.stubEnv("OPENAI_BASE_URL", "https://api.groq.com/openai/v1/");
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(err(400, "invalid_request_error"))
+      .mockResolvedValueOnce(ok("{}"));
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(getLlmCall()!("s", "u")).resolves.toBe("{}");
+    const [url, init] = fetchMock.mock.calls[1] as [string, RequestInit];
+    expect(url).toBe("https://api.groq.com/openai/v1/chat/completions");
+    const body = JSON.parse(String(init.body));
+    expect(body.response_format).toBeUndefined();
+    expect(body.temperature).toBeUndefined();
+  });
+
   it("reports a bad key clearly", async () => {
     vi.stubEnv("OPENAI_API_KEY", "test");
     vi.stubGlobal("fetch", vi.fn(async () => err(401, "invalid_api_key")));

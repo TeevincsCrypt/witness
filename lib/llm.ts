@@ -21,28 +21,27 @@ export function getLlmCall(): LlmCall | null {
   return async (system, user) => {
     // One budget for the whole call, retries included, so the route stays under maxDuration.
     const deadline = Date.now() + timeoutMs;
-    let jsonMode = true;
+    // Providers differ on optional params (Groq, Together, local servers…); on a 400 retry with a bare request.
+    let plain = false;
     const post = () =>
       fetch(`${base}/chat/completions`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
         body: JSON.stringify({
           model,
-          temperature: 0,
           messages: [
             { role: "system", content: system },
             { role: "user", content: user },
           ],
-          ...(jsonMode ? { response_format: { type: "json_object" } } : {}),
+          ...(plain ? {} : { temperature: 0, response_format: { type: "json_object" } }),
         }),
         signal: AbortSignal.timeout(Math.max(1000, deadline - Date.now())),
       });
 
     let res = await post();
     let code = res.ok ? "" : await errorCode(res);
-    // Some OpenAI-compatible servers reject response_format; retry once without it.
     if (res.status === 400) {
-      jsonMode = false;
+      plain = true;
       res = await post();
       code = res.ok ? "" : await errorCode(res);
     }
