@@ -86,7 +86,7 @@ export default function Workbench() {
       else if (parsed && typeof parsed === "object") {
         const o = parsed as Record<string, unknown>;
         const inner = (o.input && typeof o.input === "object" ? o.input : o) as Record<string, unknown>;
-        steps = inner.steps ?? [];
+        steps = inner.steps ?? inner.messages ?? [];
         if (!s.trim() && typeof inner.compactionSummary === "string") s = inner.compactionSummary;
         if (!r.trim() && typeof inner.nextUserVisibleReply === "string") r = inner.nextUserVisibleReply;
       } else return { ok: false, error: "Trace must be a JSON array of steps." };
@@ -105,7 +105,8 @@ export default function Workbench() {
     if (tables && typeof tables === "object" && !Array.isArray(tables)) {
       const o = tables as Record<string, unknown>;
       const inner = (o.input && typeof o.input === "object" ? o.input : o) as Record<string, unknown>;
-      tables = inner.tables;
+      // A fixture / QueryInput wraps the cards; otherwise treat the object as a { name: card } map.
+      tables = "tables" in inner ? inner.tables : inner;
     }
     return validateQueryInput({ tables, sql, question });
   }, [schema, sql, question]);
@@ -183,7 +184,7 @@ export default function Workbench() {
       }
       const o = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
       const inner = (o.input && typeof o.input === "object" ? o.input : o) as Record<string, unknown>;
-      const mod: Mod = "sql" in inner || "tables" in inner ? "query" : "steps" in inner || "compactionSummary" in inner ? "memory" : tab;
+      const mod: Mod = "sql" in inner || "tables" in inner ? "query" : "steps" in inner || "messages" in inner || "compactionSummary" in inner ? "memory" : tab;
       setTab(mod);
       setView((x) => ({ ...x, [mod]: "input" }));
       setError(mod, undefined);
@@ -191,7 +192,7 @@ export default function Workbench() {
         if (mod === "memory") setTrace(pretty(raw));
         else setSchema(pretty(raw));
       } else if (mod === "memory") {
-        setTrace(pretty(inner.steps ?? []));
+        setTrace(pretty(inner.steps ?? inner.messages ?? []));
         setSummary(String(inner.compactionSummary ?? ""));
         setReply(String(inner.nextUserVisibleReply ?? ""));
       } else {

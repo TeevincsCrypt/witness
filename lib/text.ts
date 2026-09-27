@@ -125,3 +125,23 @@ export function listJoin(items: string[]): string {
   if (items.length === 2) return `${items[0]} and ${items[1]}`;
   return `${items.slice(0, -1).join(", ")}, and ${items[items.length - 1]}`;
 }
+
+/**
+ * Add figures an agent may legitimately compute from tool output: pairwise
+ * sums, differences, ratios / percent changes, and the grand total.
+ */
+export function withDerived(refs: NumToken[]): NumToken[] {
+  const base = Array.from(new Set(refs.filter((r) => r.kind !== "year" && r.value !== 0).map((r) => r.value))).slice(0, 30);
+  const derived: number[] = [];
+  for (let i = 0; i < base.length; i++) {
+    for (let j = i + 1; j < base.length; j++) {
+      const [a, b] = [base[i], base[j]];
+      derived.push(a + b, Math.abs(a - b), (a / b) * 100, (b / a) * 100, ((a - b) / b) * 100, ((b - a) / a) * 100);
+    }
+  }
+  if (base.length > 2) derived.push(base.reduce((s, v) => s + v, 0));
+  return [
+    ...refs,
+    ...derived.filter(Number.isFinite).map((value) => ({ raw: "", value, tol: 0, index: -1, kind: "number" as const })),
+  ];
+}

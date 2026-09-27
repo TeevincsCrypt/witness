@@ -46,7 +46,8 @@ export type SqlAnalysis = {
   columns: ColumnRef[];
   joins: JoinRef[];
   aggregates: Aggregate[];
-  where: Clause | null;
+  where: Clause | null; // top-level WHERE (for evidence)
+  whereText: string; // every WHERE clause at any depth (CTEs, subqueries) — for filter detection
   select: Clause | null;
   selectItems: string[];
   hasGroupBy: boolean;
@@ -58,6 +59,17 @@ const KEYWORDS = new Set(
     "select from where join inner left right full outer cross natural on using group order by having limit " +
     "offset union all except intersect as and or not in is null like between case when then else end with " +
     "distinct lateral qualify window over partition asc desc fetch first rows only set values"
+  ).split(" "),
+);
+
+/** Non-column words that can appear bare in SQL: types, date parts, literals, clause words. */
+const SQL_WORDS = new Set(
+  (
+    "date time timestamp timestamptz interval true false null current_date current_time current_timestamp " +
+    "localtime localtimestamp day days month months year years week weeks quarter hour minute second epoch dow doy " +
+    "varchar char text int integer bigint smallint decimal numeric float double real boolean bool string " +
+    "nulls last filter within rows range preceding following unbounded current row exists any some top ilike " +
+    "extract cast recursive materialized"
   ).split(" "),
 );
 
@@ -213,7 +225,7 @@ export function analyzeSql(sql: string, tables: TableCard[]): SqlAnalysis {
 
   // Qualified column references: alias.column
   const columns: ColumnRef[] = [];
-  for (const m of masked.matchAll(/\b([A-Za-z_]\w*)\.([A-Za-z_]\w*|\*)/g)) {
+  for (const m of masked.matchAll(/\b([A-Za-z_]\w*)\.\s?([A-Za-z_]\w*|\*)/g)) {
     const idx = m.index ?? 0;
     if (inTableRef(idx)) continue;
     const c = resolve(m[1], m[2], idx, sql.slice(idx, idx + m[0].length));
@@ -258,32 +270,6 @@ export function analyzeSql(sql: string, tables: TableCard[]): SqlAnalysis {
     joins.push({ quote: quoteOf(start, end), start, pairs });
   }
 
-  // Aggregates, with balanced-paren argument extraction.
-  const aggregates: Aggregate[] = [];
-  for (const m of masked.matchAll(/\b(sum|count|avg|min|max)\s*\(/gi)) {
-    const idx = m.index ?? 0;
-    const open = idx + m[0].length - 1;
-    let d = 0;
-    let close = masked.length - 1;
-    for (let k = open; k < masked.length; k++) {
-      if (masked[k] === "(") d++;
-      else if (masked[k] === ")" && --d === 0) {
-        close = k;
-        break;
-      }
-    }
-    const inner = masked.slice(open + 1, close);
-    const args = columns.filter((c) => c.index > open && c.index < close);
-    aggregates.push({
-      fn: m[1].toUpperCase(),
-      distinct: /^\s*distinct\b/i.test(inner),
-      raw: sql.slice(idx, close + 1),
-      args,
-      star: /^\s*\*\s*$/.test(inner),
-      index: idx,
-    });
-  }
-
   // SELECT list, WHERE, GROUP BY (top level only).
   const selM = findTopLevel(masked, depth, /\bselect\b/i);
   const fromM = selM ? findTopLevel(masked, depth, /\bfrom\b/i, (selM.index ?? 0) + 6) : null;
@@ -308,6 +294,58 @@ export function analyzeSql(sql: string, tables: TableCard[]): SqlAnalysis {
     selectItems = selectItems.map((s) => s.replace(/^distinct\s+/i, ""));
   }
 
+  // Bare (unqualified) columns. Resolved when exactly one table has the column;
+  // in a single-table query, any other bare identifier is a hallucinated column.
+  const physicalRefs = tablesOut.filter((t) => t.card && !t.isCte);
+  const singleTable =
+    tablesOut.length === 1 && physicalRefs.length === 1 && (masked.match(/\bselect\b/gi) ?? []).length === 1;
+  const aliases = new Set([...masked.matchAll(/\bas\s+([A-Za-z_]\w*)/gi)].map((m) => m[1].toLowerCase()));
+  for (const item of selectItems) {
+    const implicit = item.match(/[\w)]\s+([A-Za-z_]\w*)$/); // "SUM(x) total"
+    if (implicit && !KEYWORDS.has(implicit[1].toLowerCase())) aliases.add(implicit[1].toLowerCase());
+  }
+  const refNames = new Set(tablesOut.flatMap((t) => [t.alias, t.name.toLowerCase()]));
+  for (const m of masked.matchAll(/(?<!\.\s?)(?<![\w$:])([A-Za-z_]\w*)\b(?!\s*\()(?!\s*\.)/g)) {
+    const idx = m.index ?? 0;
+    const id = m[1].toLowerCase();
+    if (inTableRef(idx) || KEYWORDS.has(id) || SQL_WORDS.has(id) || aliases.has(id) || refNames.has(id)) continue;
+    if (ctes.includes(id)) continue;
+    const owners = physicalRefs.filter((t) => hasColumn(t.card!, id));
+    if (owners.length === 1) {
+      columns.push({ qualifier: owners[0].alias, column: m[1], card: owners[0].card, known: true, index: idx, raw: m[1] });
+    } else if (owners.length === 0 && singleTable) {
+      columns.push({ qualifier: "", column: m[1], card: physicalRefs[0].card, known: false, index: idx, raw: m[1] });
+    }
+  }
+  columns.sort((x, y) => x.index - y.index);
+
+  // Aggregates, with balanced-paren argument extraction.
+  const aggregates: Aggregate[] = [];
+  for (const m of masked.matchAll(/\b(sum|count|avg|min|max)\s*\(/gi)) {
+    const idx = m.index ?? 0;
+    const open = idx + m[0].length - 1;
+    let d = 0;
+    let close = masked.length - 1;
+    for (let k = open; k < masked.length; k++) {
+      if (masked[k] === "(") d++;
+      else if (masked[k] === ")" && --d === 0) {
+        close = k;
+        break;
+      }
+    }
+    if (/^\s*over\b/i.test(masked.slice(close + 1))) continue; // window function, not a GROUP BY aggregate
+    const inner = masked.slice(open + 1, close);
+    const args = columns.filter((c) => c.index > open && c.index < close);
+    aggregates.push({
+      fn: m[1].toUpperCase(),
+      distinct: /^\s*distinct\b/i.test(inner),
+      raw: sql.slice(idx, close + 1),
+      args,
+      star: /^\s*\*\s*$/.test(inner),
+      index: idx,
+    });
+  }
+
   const whereM = findTopLevel(masked, depth, /\bwhere\b/i);
   let where: Clause | null = null;
   if (whereM) {
@@ -317,12 +355,41 @@ export function analyzeSql(sql: string, tables: TableCard[]): SqlAnalysis {
     where = { text: masked.slice(a, b), quote: quoteOf(a, b), start: a, end: b };
   }
 
+  // Every WHERE clause, at any depth; each ends at the next clause keyword or
+  // the paren that closes its own level.
+  const whereParts: string[] = [];
+  for (const m of masked.matchAll(/\bwhere\b/gi)) {
+    const w = m.index ?? 0;
+    const d0 = depth[w] ?? 0;
+    const stop = /\b(?:group\s+by|order\s+by|limit|having|union|qualify|window)\b|;|\)/gi;
+    stop.lastIndex = w + 5;
+    let end = masked.length;
+    let sm: RegExpExecArray | null;
+    while ((sm = stop.exec(masked))) {
+      if ((depth[sm.index] ?? 0) === d0) {
+        end = sm.index;
+        break;
+      }
+    }
+    const text = masked.slice(w, end);
+    whereParts.push(text);
+    // Implicit joins: "FROM a, b WHERE a.k = b.k"
+    for (const pm of text.matchAll(/\b([A-Za-z_]\w*)\.([A-Za-z_]\w*)\s*=\s*([A-Za-z_]\w*)\.([A-Za-z_]\w*)/g)) {
+      const base = w + (pm.index ?? 0);
+      const l = resolve(pm[1], pm[2], base, `${pm[1]}.${pm[2]}`);
+      const r = resolve(pm[3], pm[4], base + pm[0].indexOf(pm[3], pm[1].length + pm[2].length + 1), `${pm[3]}.${pm[4]}`);
+      if (l && r && byAlias.get(pm[1].toLowerCase()) !== byAlias.get(pm[3].toLowerCase()))
+        joins.push({ quote: sql.slice(base, base + pm[0].length), start: base, pairs: [{ left: l, right: r }] });
+    }
+  }
+
   return {
     tables: tablesOut,
     columns,
     joins,
     aggregates,
     where,
+    whereText: whereParts.join("\n"),
     select,
     selectItems,
     hasGroupBy: !!findTopLevel(masked, depth, /\bgroup\s+by\b/i),
