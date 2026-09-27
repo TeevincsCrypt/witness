@@ -19,7 +19,10 @@ export function getLlmCall(): LlmCall | null {
   const model = llmModel();
 
   return async (system, user) => {
-    const post = (jsonMode: boolean) =>
+    // One budget for the whole call, retries included, so the route stays under maxDuration.
+    const deadline = Date.now() + timeoutMs;
+    let jsonMode = true;
+    const post = () =>
       fetch(`${base}/chat/completions`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
@@ -32,16 +35,39 @@ export function getLlmCall(): LlmCall | null {
           ],
           ...(jsonMode ? { response_format: { type: "json_object" } } : {}),
         }),
-        signal: AbortSignal.timeout(timeoutMs),
+        signal: AbortSignal.timeout(Math.max(1000, deadline - Date.now())),
       });
 
-    let res = await post(true);
+    let res = await post();
+    let code = res.ok ? "" : await errorCode(res);
     // Some OpenAI-compatible servers reject response_format; retry once without it.
-    if (res.status === 400) res = await post(false);
-    if (!res.ok) throw new Error(`LLM HTTP ${res.status}`);
+    if (res.status === 400) {
+      jsonMode = false;
+      res = await post();
+      code = res.ok ? "" : await errorCode(res);
+    }
+    // A true rate limit is worth one short retry; an empty account (insufficient_quota) is not.
+    if (res.status === 429 && code !== "insufficient_quota" && deadline - Date.now() > 3000) {
+      const wait = Math.min(2000, (Number(res.headers.get("retry-after")) || 1) * 1000);
+      await new Promise((r) => setTimeout(r, wait));
+      res = await post();
+      code = res.ok ? "" : await errorCode(res);
+    }
+    if (!res.ok) throw new Error(`LLM HTTP ${res.status}${code ? ` ${code}` : ""}`);
     const data = (await res.json()) as { choices?: { message?: { content?: string } }[] };
     const content = data.choices?.[0]?.message?.content;
     if (typeof content !== "string" || !content.trim()) throw new Error("empty LLM response");
     return content;
   };
+}
+
+/** OpenAI-style error code ("insufficient_quota", "invalid_api_key", …) from an error response. */
+async function errorCode(res: Response): Promise<string> {
+  try {
+    const body = (await res.json()) as { error?: { code?: unknown; type?: unknown } };
+    const c = body.error?.code ?? body.error?.type;
+    return typeof c === "string" ? c.replace(/[^\w.-]/g, "").slice(0, 40) : "";
+  } catch {
+    return "";
+  }
 }
